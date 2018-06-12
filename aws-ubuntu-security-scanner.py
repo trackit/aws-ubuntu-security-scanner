@@ -7,6 +7,9 @@ import ConfigParser
 import argparse
 import sys
 from datetime import datetime
+import xlsxwriter
+import boto3
+
 
 class Parser(argparse.ArgumentParser):
     def print_help(self, file=sys.stdout):
@@ -27,6 +30,11 @@ def parse_args():
         default="~/.ssh/id_rsa",
     )
     parser.add_argument(
+        "--s3",
+        help="Bucket name",
+        dest="s3",
+    )
+    parser.add_argument(
         "--hosts",
         help="Path to host list",
         dest="host",
@@ -40,8 +48,8 @@ def parse_args():
     )
     now = datetime.now()
     parser.add_argument(
-        "--csv-prefix",
-        help="Specify prefixe name for csv output",
+        "--output",
+        help="Specify filename for output",
         dest="csv",
         default=now.strftime("monitoring_report_%Y_%m_%d"),
     )
@@ -109,6 +117,10 @@ def main():
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     for host in hosts:
         client.connect(host, port=22, username=args.username, pkey=key)
+        hostname = ''
+        stdin, stdout, stderr = client.exec_command('hostname -f')
+        for line in stdout:
+            hostname += line.strip('\n')
         stdin, stdout, stderr = client.exec_command('uname -a')
         kernel = ''
         for line in stdout:
@@ -116,6 +128,7 @@ def main():
         kernel_csv += [
             {
                 'host': host,
+                'hostname': hostname,
                 'kernel': kernel
             }
         ]
@@ -127,6 +140,7 @@ def main():
                     pkg_csv += [
                         {
                             'host': host,
+                            'hostname': hostname,
                             'package': n,
                             'current_version': p,
                             "upgradable": u
@@ -141,14 +155,37 @@ def main():
                 keys_csv += [
                     {
                         'host': host,
+                        'hostname': hostname,
                         'user': user,
                         'key': key
                     }
                 ]
+    csv_list = []
+    csv_list.append('kernel_'+args.csv)
+    csv_list.append('apt_'+args.csv)
+    csv_list.append('keys_'+args.csv)
 
-    generate_csv(args.csv+'_kernel.csv', kernel_csv, ['host', 'kernel'])
-    generate_csv(args.csv+'_apt.csv', pkg_csv, ['host', 'package', 'current_version', 'upgradable'])
-    generate_csv(args.csv+'_keys.csv', keys_csv, ['host', 'user', 'key'])
+    generate_csv(csv_list[0], kernel_csv, ['host','hostname', 'kernel'])
+    generate_csv(csv_list[1], pkg_csv, ['host', 'hostname', 'package', 'current_version', 'upgradable'])
+    generate_csv(csv_list[2], keys_csv, ['host', 'hostname', 'user', 'key'])
+
+    workbook = xlsxwriter.Workbook(args.csv)
+    for csvfile in csv_list:
+        worksheet = workbook.add_worksheet(csvfile.split('_')[0])
+        with open(csvfile, 'rt') as f:
+            reader = csv.reader(f)
+            for r, row in enumerate(reader):
+                for c, col in enumerate(row):
+                    worksheet.write(r, c, col)
+    workbook.close()
+
+    if args.s3:
+        s3 = boto3.resource('s3')
+        data = open(args.csv, 'rb')
+        now = datetime.now()
+        filename = now.strftime("monitoring_report_%Y_%m_%d")
+        s3.Bucket(args.s3).put_object(Key=filename, Body=data)
+
     client.close()
 
 if __name__ == "__main__":
