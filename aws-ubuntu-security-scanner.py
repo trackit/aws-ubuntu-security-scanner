@@ -9,6 +9,7 @@ import sys
 from datetime import datetime
 import xlsxwriter
 import boto3
+import socket
 
 
 class Parser(argparse.ArgumentParser):
@@ -28,6 +29,18 @@ def parse_args():
         help="Path to private ssh key",
         dest="key",
         default="~/.ssh/id_rsa",
+    )
+    parser.add_argument(
+        "--port",
+        help="SSH port",
+        dest="port",
+        default="22",
+    )
+    parser.add_argument(
+        "--password",
+        help="Path to private ssh key",
+        dest="password",
+        default="passwd",
     )
     parser.add_argument(
         "--s3",
@@ -112,54 +125,81 @@ def main():
     keys_csv = []
     hosts = get_hosts_list(args.host)
     print hosts
-    key = paramiko.RSAKey.from_private_key_file(args.key, password=args.passphrase)
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     for host in hosts:
-        client.connect(host, port=22, username=args.username, pkey=key)
-        hostname = ''
-        stdin, stdout, stderr = client.exec_command('hostname -f')
-        for line in stdout:
-            hostname += line.strip('\n')
-        stdin, stdout, stderr = client.exec_command('uname -a')
-        kernel = ''
-        for line in stdout:
-            kernel += line.strip('\n')
-        kernel_csv += [
-            {
-                'host': host,
-                'hostname': hostname,
-                'kernel': kernel
-            }
-        ]
-        stdin, stdout, stderr = client.exec_command('apt list --installed')
-        for line in stdout:
-            if line != "Listing...\n":
-                n, p, u = parse_package(line.strip('\n'))
-                if u != "uptodate" and u != "automatic" and u != "local":
-                    pkg_csv += [
-                        {
-                            'host': host,
-                            'hostname': hostname,
-                            'package': n,
-                            'current_version': p,
-                            "upgradable": u
-                        }
-                    ]
-        stdin, stdout, stderr = client.exec_command('ls -1 /home')
-        for user in stdout:
-            user = user.replace("\n", "")
-            cmd = "sudo cat /home/" + user + "/.ssh/authorized_keys"
-            stdin, a_keys, stderr = client.exec_command(cmd)
-            for key in a_keys:
-                keys_csv += [
-                    {
-                        'host': host,
-                        'hostname': hostname,
-                        'user': user,
-                        'key': key
-                    }
-                ]
+        print "Connecting to "+host
+        try:
+            key = paramiko.RSAKey.from_private_key_file(args.key, password=args.passphrase)
+            client.connect(host, port=args.port, username=args.username, pkey=key)
+            hostname = ''
+            stdin, stdout, stderr = client.exec_command('hostname -f')
+            for line in stdout:
+                hostname += line.strip('\n')
+            stdin, stdout, stderr = client.exec_command('uname -a')
+            kernel = ''
+            for line in stdout:
+                kernel += line.strip('\n')
+            kernel_csv += [
+                {
+                    'host': host,
+                    'hostname': hostname,
+                    'kernel': kernel
+                }
+            ]
+            stdin, stdout, stderr = client.exec_command('apt list --installed')
+            for line in stdout:
+                if line != "Listing...\n":
+                    n, p, u = parse_package(line.strip('\n'))
+                    if u != "uptodate" and u != "automatic" and u != "local" and u != "auto-removable":
+                        pkg_csv += [
+                            {
+                                'host': host,
+                                'hostname': hostname,
+                                'package': n,
+                                'current_version': p,
+                                "upgradable": u
+                            }
+                        ]
+            stdin, stdout, stderr = client.exec_command('ls -1 /home')
+            for user in stdout:
+                print user
+                user = user.replace("\n", "")
+                cmd = "echo " + args.password + " | sudo -S cat /home/" + user + "/.ssh/authorized_keys{,1,2,3}"
+                stdin, a_keys, stderr = client.exec_command(cmd,get_pty=True)
+                for l in stderr:
+                    print l
+                for key in a_keys:
+                    print user + key
+                    if "Password:" not in key and "ssh-rsa" in key:
+                        keys_csv += [
+                            {
+                                'host': host,
+                                'hostname': hostname,
+                                'user': user,
+                                'key': key
+                            }
+                        ]
+
+        # except socket.timeout:
+        #     print ("Unable to connect to " + host)
+        #     pass
+        #     continue
+
+        # except socket.error : 
+        #     print ("Unable to connect to " + host)
+        #     pass
+        #     continue
+
+        # except paramiko.SSHException, socket.error :
+        #     print ("Unable to connect to " + host)
+        #     pass
+        #     continue
+        except:
+            print ("Unable to connect to " + host)
+            pass
+            continue       
+
     csv_list = []
     csv_list.append('kernel_'+args.csv)
     csv_list.append('apt_'+args.csv)
