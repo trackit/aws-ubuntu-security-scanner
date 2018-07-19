@@ -10,7 +10,7 @@ from datetime import datetime
 import xlsxwriter
 import boto3
 import socket
-
+import os
 
 class Parser(argparse.ArgumentParser):
     def print_help(self, file=sys.stdout):
@@ -82,7 +82,6 @@ def get_hosts_list(filename):
     return tab
 
 def generate_csv(filename, data, header_name):
-    # filename = "report.csv"
     with open(filename, 'wb') as file:
         writer = csv.DictWriter(file, header_name)
         writer.writeheader()
@@ -118,11 +117,17 @@ def parse_package(package):
     upg = package_get_upgradable(package)
     return name, version, upg
 
+def check_if_security_update(p, s):
+    if p in s:
+        return "*"
+    return ""
+
 def main():
     args, parser = parse_args()
     kernel_csv = []
     pkg_csv = []
     keys_csv = []
+    cve_csv = []
     hosts = get_hosts_list(args.host)
     print hosts
     client = paramiko.SSHClient()
@@ -140,25 +145,39 @@ def main():
             kernel = ''
             for line in stdout:
                 kernel += line.strip('\n')
+            stdin, stdout, stderr = client.exec_command('lsb_release -cs')
+            for l in stdout:
+                codename = l.replace("\n", "")
             kernel_csv += [
                 {
                     'host': host,
                     'hostname': hostname,
+                    'ubuntu_version': codename,
                     'kernel': kernel
                 }
             ]
+            cmd = "echo " + args.password + " | sudo -S unattended-upgrade --dry-run -d 2> /dev/null | awk '/Checking/ { print $2 }'"
+            stdin, stdout, stderr = client.exec_command(cmd)
+            security_pkg = []
+            for p in stdout:
+                security_pkg.append(p.replace("\n", ""))
             stdin, stdout, stderr = client.exec_command('apt list --installed')
+            f = open('tmp_pkg.txt', 'a')
             for line in stdout:
                 if line != "Listing...\n":
+                    f.write(line)
                     n, p, u = parse_package(line.strip('\n'))
+                    s = check_if_security_update(n, security_pkg)
                     if u != "uptodate" and u != "automatic" and u != "local" and u != "auto-removable":
                         pkg_csv += [
                             {
                                 'host': host,
                                 'hostname': hostname,
+                                'ubuntu_version': codename,
                                 'package': n,
                                 'current_version': p,
-                                "upgradable": u
+                                "upgradable": u,
+                                "security": s
                             }
                         ]
             stdin, stdout, stderr = client.exec_command('ls -1 /home')
@@ -181,7 +200,40 @@ def main():
                             }
                         ]
 
-        # except socket.timeout:
+            # stdin, stdout, stderr = client.exec_command('lsb_release -cs')
+            # for l in stdout:
+            #     codename = l.replace("\n", "")
+            # os.system("python active-cve-check/scan_packages.py tmp_pkg.txt ubuntu-cve-tracker/active --ubuntu-version=" + codename + " > rezpkg")
+            # with open('rezpkg') as f:
+            #     lines = f.readlines()
+            # for l in lines:
+            #     pkg = l.split(';')
+            #     if len(pkg) > 2:
+            #         published = pkg[2]
+            #         modified = pkg[3]
+            #         summary = pkg[4]
+            #     else:
+            #         published = "NA"
+            #         modified = "NA"
+            #         summary = "NA" 
+            #     cve_csv += [
+            #         {
+            #             'host': host,
+            #             'hostname': hostname,
+            #             'cve': pkg[0],
+            #             'package': pkg[1],
+            #             'published': published,
+            #             'modified': modified,
+            #             'summary': summary
+
+            #         }
+            #     ]                
+            # # os.remove('tmp_pkg.txt')
+            # os.remove('rezpkg')
+
+
+
+        # except socket.timeout:    
         #     print ("Unable to connect to " + host)
         #     pass
         #     continue
@@ -204,10 +256,13 @@ def main():
     csv_list.append('kernel_'+args.csv)
     csv_list.append('apt_'+args.csv)
     csv_list.append('keys_'+args.csv)
+    # csv_list.append('cve_'+args.csv)
 
-    generate_csv(csv_list[0], kernel_csv, ['host','hostname', 'kernel'])
-    generate_csv(csv_list[1], pkg_csv, ['host', 'hostname', 'package', 'current_version', 'upgradable'])
+
+    generate_csv(csv_list[0], kernel_csv, ['host','hostname', 'ubuntu_version', 'kernel'])
+    generate_csv(csv_list[1], pkg_csv, ['host', 'hostname', 'ubuntu_version', 'package', 'current_version', 'upgradable', 'security'])
     generate_csv(csv_list[2], keys_csv, ['host', 'hostname', 'user', 'key'])
+    # generate_csv(csv_list[3], cve_csv, ['host', 'hostname', 'cve', 'package', 'published', 'modified', 'summary'])
 
     workbook = xlsxwriter.Workbook(args.csv)
     for csvfile in csv_list:
@@ -217,6 +272,7 @@ def main():
             for r, row in enumerate(reader):
                 for c, col in enumerate(row):
                     worksheet.write(r, c, col)
+        os.remove(csvfile)
     workbook.close()
 
     if args.s3:
