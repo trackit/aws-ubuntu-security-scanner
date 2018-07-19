@@ -1,4 +1,4 @@
-# Ubuntu security scanenr
+# Ubuntu security scanner
 
 This script will generate an excel spreadsheet with security informations regarding kernel, packages, cve and ssh keys
 
