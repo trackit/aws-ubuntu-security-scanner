@@ -182,14 +182,10 @@ def main():
                         ]
             stdin, stdout, stderr = client.exec_command('ls -1 /home')
             for user in stdout:
-                print user
                 user = user.replace("\n", "")
                 cmd = "echo " + args.password + " | sudo -S cat /home/" + user + "/.ssh/authorized_keys{,1,2,3}"
                 stdin, a_keys, stderr = client.exec_command(cmd,get_pty=True)
-                for l in stderr:
-                    print l
                 for key in a_keys:
-                    print user + key
                     if "Password:" not in key and "ssh-rsa" in key:
                         keys_csv += [
                             {
